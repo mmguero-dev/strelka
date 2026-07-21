@@ -1,3 +1,8 @@
+import re
+
+from pytest_unordered import unordered
+
+from strelka.scanners.scan_email import ScanEmail
 from strelka.testing import (
     File,
     Scanner,
@@ -12,6 +17,16 @@ from strelka.testing import (
 scan_email = fixtures.scanners.email
 data_eml = fixtures.data("test.eml")
 data_broken_eml = fixtures.data("test_broken.eml")
+data_headers_eml = fixtures.data("test_headers.eml")
+data_headers_multihop_eml = fixtures.data("test_headers_multihop.eml")
+data_complex_recipients_eml = fixtures.data("test_email_complex_recipients.eml")
+data_encoded_headers_eml = fixtures.data("test_email_encoded_headers.eml")
+data_group_syntax_eml = fixtures.data("test_email_group_syntax.eml")
+data_malformed_addresses_eml = fixtures.data("test_email_malformed_addresses.eml")
+data_special_cases_eml = fixtures.data("test_email_special_cases.eml")
+data_gateway_links_eml = fixtures.data("test_email_gateway_links.eml")
+data_link_stress_eml = fixtures.data("test_email_link_stress.eml")
+data_links_eml = fixtures.data("test_links.eml")
 
 
 def test_scan_email(
@@ -56,19 +71,31 @@ def test_scan_email(
                 "aliquet fermentum.\n"
             ),
             "domains": [
-                "1.0in",
-                "div.msonormal",
-                "div.wordsection1",
                 "schemas.microsoft.com",
-                "span.emailstyle17",
-                "span.msohyperlink",
-                "span.msohyperlinkfollowed",
                 "www.w3.org",
             ],
             "subject": "Lorem Ipsum",
             "to": ["baz.quk@example.com"],
             "cc": [],
-            "from": "foo.bar@example.com",
+            "bcc": [],
+            "from": ["foo.bar@example.com"],
+            "reply_to": [],
+            "return_path": "foo.bar@example.com",
+            "in_reply_to": "",
+            "references": [],
+            "thread_topic": "Lorem Ipsum",
+            "x_originating_ip": "",
+            "auto_submitted": "",
+            "precedence": "",
+            "content_type": 'multipart/mixed; boundary="_006_DS7PR03MB5640AD212589DFB7CE58D90CFBEB9DS7PR03MB5640namp_"',
+            "x_mailer": [],
+            "delivered_to": ["baz.quk@example.com"],
+            "auth": {"spf": "pass", "dkim": "", "dmarc": "", "compauth": ""},
+            "spam": {"scl": "", "bcl": ""},
+            "links": [
+                "http://schemas.microsoft.com/office/2004/12/omml",
+                "http://www.w3.org/TR/REC-html40",
+            ],
             "date_utc": parse_timestamp("2022-12-21T02:29:49.000Z"),
             "message_id": "DS7PR03MB5640AD212589DFB7CE58D90CFBEB9@DS7PR03MB5640.namprd03.prod.outlook.com",
             "received_domain": [
@@ -80,7 +107,6 @@ def test_scan_email(
                 "pps.filterd",
             ],
             "received_ip": [
-                "022.12.20.18",
                 "127.0.0.1",
                 "2002:a05:6500:11d0:b0:17b:2a20:6c32",
                 "205.220.177.243",
@@ -95,7 +121,7 @@ def test_scan_email(
         scanner=scan_email,
         fixture=data_eml,
         options={
-            "create_thumbnail": False,
+            "capture_raw_headers": False,
         },
         expected=test_event,
     )
@@ -133,7 +159,22 @@ def test_scan_email_incomplete(
             "subject": "",
             "to": [],
             "cc": [],
-            "from": "",
+            "bcc": [],
+            "from": [],
+            "reply_to": [],
+            "return_path": "",
+            "in_reply_to": "",
+            "references": [],
+            "thread_topic": "",
+            "x_originating_ip": "",
+            "auto_submitted": "",
+            "precedence": "",
+            "content_type": "",
+            "x_mailer": [],
+            "delivered_to": [],
+            "auth": {"spf": "", "dkim": "", "dmarc": "", "compauth": ""},
+            "spam": {"scl": "", "bcl": ""},
+            "links": ["https://acme.com"],
             "date_utc": parse_timestamp("1970-01-01T00:00:00.000Z"),
             "message_id": "",
             "received_domain": [],
@@ -144,7 +185,796 @@ def test_scan_email_incomplete(
         scanner=scan_email,
         fixture=data_broken_eml,
         options={
-            "create_thumbnail": True,
+            "capture_raw_headers": False,
         },
         expected=test_event,
     )
+
+
+def test_header_value_helper() -> None:
+    raw = {"reply-to": ["  noreply@example.com  "], "received": ["a", "b"]}
+    assert ScanEmail._header_value(raw, "reply-to") == "noreply@example.com"
+    assert ScanEmail._header_value(raw, "missing") == ""
+
+
+def test_extract_curated_headers() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    scanner.event = {}
+    parsed_header = {
+        "delivered_to": ["recipient@corp.example"],
+    }
+    raw = {
+        "from": ["Test Sender <sender@external.example>"],
+        "to": ["recipient@corp.example"],
+        "cc": ["cc1@corp.example, cc2@corp.example"],
+        "reply-to": ["noreply@external.example"],
+        "return-path": ["<sender@external.example>"],
+        "in-reply-to": ["<parent@external.example>"],
+        "references": ["<root@external.example> <parent@external.example>"],
+        "thread-topic": ["Test Subject Thread"],
+        "x-originating-ip": ["[203.0.113.10]"],
+        "auto-submitted": ["auto-generated"],
+        "precedence": ["bulk"],
+        "content-type": ['text/plain; charset="utf-8"'],
+        "x-mailer": ["Microsoft Office Outlook 12.0"],
+    }
+    scanner._extract_curated_headers(parsed_header, raw)
+    assert scanner.event["from"] == ["sender@external.example"]
+    assert scanner.event["to"] == ["recipient@corp.example"]
+    assert scanner.event["cc"] == ["cc1@corp.example", "cc2@corp.example"]
+    assert scanner.event["bcc"] == []
+    assert scanner.event["delivered_to"] == ["recipient@corp.example"]
+    assert scanner.event["reply_to"] == ["noreply@external.example"]
+    assert scanner.event["return_path"] == "sender@external.example"
+    assert scanner.event["in_reply_to"] == "parent@external.example"
+    assert scanner.event["references"] == [
+        "root@external.example",
+        "parent@external.example",
+    ]
+    assert scanner.event["thread_topic"] == "Test Subject Thread"
+    assert scanner.event["x_originating_ip"] == "203.0.113.10"
+    assert scanner.event["auto_submitted"] == "auto-generated"
+    assert scanner.event["precedence"] == "bulk"
+    assert scanner.event["content_type"] == 'text/plain; charset="utf-8"'
+    assert scanner.event["x_mailer"] == ["Microsoft Office Outlook 12.0"]
+
+
+def test_parse_auth_results() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    raw = {
+        "authentication-results": [
+            "mx.corp.example; spf=pass smtp.mailfrom=external.example; "
+            "dkim=pass header.d=external.example; dmarc=pass action=none; "
+            "compauth=pass reason=100"
+        ],
+        "received-spf": [
+            "pass (corp.example: domain of sender@external.example " "designates 203.0.113.10 as permitted sender)"
+        ],
+    }
+    assert scanner._parse_auth_results(raw) == {
+        "spf": "pass",
+        "dkim": "pass",
+        "dmarc": "pass",
+        "compauth": "pass",
+    }
+
+
+def test_parse_auth_results_empty() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    assert scanner._parse_auth_results({}) == {
+        "spf": "",
+        "dkim": "",
+        "dmarc": "",
+        "compauth": "",
+    }
+
+
+def test_decode_mime_words() -> None:
+    """RFC 2047 encoded-words decode to plain text; non-encoded and malformed
+    values pass through unchanged."""
+    assert ScanEmail._decode_mime_words("=?utf-8?B?4pyTIEludm9pY2U=?=") == "✓ Invoice"
+    assert ScanEmail._decode_mime_words("=?utf-8?Q?Caf=C3=A9?=") == "Café"
+    assert ScanEmail._decode_mime_words("Plain Subject") == "Plain Subject"
+    assert ScanEmail._decode_mime_words("") == ""
+    # Malformed encoded-word is returned as-is rather than raising.
+    assert ScanEmail._decode_mime_words("=?bogus?X?zz?=") == "=?bogus?X?zz?="
+
+
+def test_extract_curated_headers_decodes_thread_topic() -> None:
+    """thread_topic is RFC 2047 decoded during curated extraction."""
+    scanner = ScanEmail.__new__(ScanEmail)
+    scanner.event = {}
+    scanner._extract_curated_headers({}, {"thread-topic": ["=?utf-8?B?4pyTIEludm9pY2U=?="]})
+    assert scanner.event["thread_topic"] == "✓ Invoice"
+
+
+def test_parse_auth_results_topmost_only() -> None:
+    """Only the trusted topmost Authentication-Results is parsed; lower-hop
+    headers are ignored entirely (no best-fill composite across trust domains).
+    A method absent from the topmost header stays empty rather than being
+    filled from an untrusted relay."""
+    scanner = ScanEmail.__new__(ScanEmail)
+    raw = {
+        "authentication-results": [
+            # Trusted topmost header from our receiving system. It omits
+            # compauth on purpose.
+            "mx.corp.example; spf=pass smtp.mailfrom=external.example; "
+            "dkim=pass header.d=external.example; dmarc=pass action=none",
+            # Untrusted upstream relay with failing verdicts AND a compauth
+            # value. None of this may leak into the flat auth object.
+            "relay.upstream.example; spf=fail; dkim=fail; compauth=fail reason=001",
+        ],
+    }
+    assert scanner._parse_auth_results(raw) == {
+        "spf": "pass",
+        "dkim": "pass",
+        "dmarc": "pass",
+        "compauth": "",
+    }
+
+
+def test_parse_spam_scores() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    raw = {
+        "x-ms-exchange-organization-scl": ["1"],
+        "x-forefront-antispam-report": ["CIP:203.0.113.10;CTRY:US;SCL:1;BCL:0;"],
+    }
+    assert scanner._parse_spam_scores(raw) == {"scl": "1", "bcl": "0"}
+
+
+def test_parse_spam_scores_empty() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    assert scanner._parse_spam_scores({}) == {"scl": "", "bcl": ""}
+
+
+def test_build_raw_header_map_basic() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    raw = {"subject": ["Hello"], "received": ["a", "b"]}
+    headers, flags = scanner._build_raw_header_map(raw, {})
+    assert headers == {"subject": ["Hello"], "received": ["a", "b"]}
+    assert flags == []
+
+
+def test_build_raw_header_map_skip_list() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    raw = {"subject": ["Hello"], "x-microsoft-antispam-message-info": ["blob"]}
+    headers, flags = scanner._build_raw_header_map(raw, {"header_skip_list": ["x-microsoft-antispam-message-info"]})
+    assert headers == {"subject": ["Hello"]}
+    assert flags == ["skipped:x-microsoft-antispam-message-info"]
+
+
+def test_build_raw_header_map_truncation() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    raw = {"x-big": ["A" * 100]}
+    headers, flags = scanner._build_raw_header_map(raw, {"max_header_length": 10})
+    assert headers == {"x-big": ["A" * 10]}
+    assert flags == ["truncated:x-big"]
+
+
+def test_build_raw_header_map_total_cap() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    raw = {"a": ["x" * 20], "b": ["y" * 20]}
+    headers, flags = scanner._build_raw_header_map(raw, {"max_headers_total": 25})
+    # First header fits (20 + len("a") = 21 <= 25); second pushes past the cap.
+    assert headers == {"a": ["x" * 20]}
+    assert flags == ["total_cap_reached:b"]
+
+
+def test_scan_email_headers_fixture(
+    scan_email: Scanner,
+    data_headers_eml: File,
+) -> None:
+    """Synthetic Exchange email: curated fields, parsed signals, guarded raw map."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_headers_eml,
+        options={
+            "capture_raw_headers": True,  # opt-in; default is off
+            "header_skip_list": ["x-microsoft-antispam-message-info"],
+        },
+    )
+
+    # Curated fields.
+    assert scanner_event["cc"] == unordered(["cc1@corp.example", "cc2@corp.example"])
+    assert scanner_event["reply_to"] == ["noreply@external.example"]
+    assert scanner_event["return_path"] == "sender@external.example"
+    assert scanner_event["in_reply_to"] == "parent-msgid@external.example"
+    assert scanner_event["references"] == [
+        "root-msgid@external.example",
+        "parent-msgid@external.example",
+    ]
+    assert scanner_event["thread_topic"] == "Test Subject Thread"
+    assert scanner_event["x_originating_ip"] == "203.0.113.10"
+    assert scanner_event["auto_submitted"] == "auto-generated"
+    assert scanner_event["precedence"] == "bulk"
+    assert scanner_event["x_mailer"] == ["Microsoft Office Outlook 12.0"]
+    assert scanner_event["delivered_to"] == []
+
+    # Parsed signals.
+    assert scanner_event["auth"] == {
+        "spf": "pass",
+        "dkim": "pass",
+        "dmarc": "pass",
+        "compauth": "pass",
+    }
+    assert scanner_event["spam"] == {"scl": "1", "bcl": "0"}
+
+    # Raw map present, skip-list honored.
+    assert "headers" in scanner_event
+    assert "x-microsoft-antispam-message-info" not in scanner_event["headers"]
+    assert scanner_event["headers_flags"] == ["skipped:x-microsoft-antispam-message-info"]
+    assert scanner_event["headers"]["subject"] == ["Test Subject"]
+
+
+def test_scan_email_capture_raw_headers_disabled(
+    scan_email: Scanner,
+    data_headers_eml: File,
+) -> None:
+    """When disabled, no raw map is emitted but curated fields still populate."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_headers_eml,
+        options={
+            "capture_raw_headers": False,
+        },
+    )
+    assert "headers" not in scanner_event
+    assert "headers_flags" not in scanner_event
+    # Curated extraction is independent of the raw-map toggle.
+    assert scanner_event["reply_to"] == ["noreply@external.example"]
+    assert scanner_event["auth"]["dkim"] == "pass"
+
+
+def test_scan_email_multihop_auth_and_optin_default(
+    scan_email: Scanner,
+    data_headers_multihop_eml: File,
+) -> None:
+    """Multi-hop Exchange email with NO capture_raw_headers option set.
+
+    Verifies (a) authentication verdicts come from the trusted topmost
+    Authentication-Results header (not the upstream relay's softfail/fail), and
+    (b) the raw header map is opt-in: omitting the option leaves it disabled.
+    """
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_headers_multihop_eml,
+        options={
+            # capture_raw_headers intentionally omitted -> defaults to off.
+        },
+    )
+
+    # Trusted (topmost) verdicts win over the upstream relay's failing ones.
+    assert scanner_event["auth"] == {
+        "spf": "pass",
+        "dkim": "pass",
+        "dmarc": "pass",
+        "compauth": "pass",
+    }
+    assert scanner_event["spam"] == {"scl": "5", "bcl": "2"}
+    assert scanner_event["auto_submitted"] == "auto-generated"
+    assert scanner_event["precedence"] == "bulk"
+
+    # Opt-in default: no option passed -> no raw header map emitted.
+    assert "headers" not in scanner_event
+    assert "headers_flags" not in scanner_event
+
+
+def test_scan_email_complex_recipients(
+    scan_email: Scanner,
+    data_complex_recipients_eml: File,
+) -> None:
+    """Complex recipient combinations: multi-address To/Cc/Bcc, tagged sender, group syntax."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_complex_recipients_eml,
+        options={},
+    )
+
+    assert scanner_event["from"] == ["john.smith+sales@example.com"]
+    assert scanner_event["to"] == unordered(
+        ["jane.doe@corp.example", "bob@corp.example", "patrick.obrien@corp.example"]
+    )
+    assert scanner_event["cc"] == unordered(
+        ["marketing-team@corp.example", "sales@example.com", "li.zhang@corp.example"]
+    )
+    assert scanner_event["bcc"] == ["secret-list@corp.example"]
+    assert scanner_event["reply_to"] == unordered(["no-reply@example.com", "support@example.com"])
+    assert scanner_event["return_path"] == "bounce+12345@example.com"
+    assert scanner_event["in_reply_to"] == "msg-001@example.com"
+    assert scanner_event["references"] == unordered(["root-msg@example.com", "msg-001@example.com"])
+    assert scanner_event["subject"] == "Re: Q1 Sales Report [EXTERNAL]"
+    assert scanner_event["message_id"] == "complex-recipients-001@example.com"
+    assert scanner_event["x_mailer"] == ["Microsoft Outlook 16.0"]
+    assert scanner_event["delivered_to"] == []
+
+
+def test_scan_email_display_names_copy(
+    scan_email: Scanner,
+    data_complex_recipients_eml: File,
+) -> None:
+    """mailbox_mode=copy appends formatted addresses to the same array."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_complex_recipients_eml,
+        options={"mailbox_mode": "copy"},
+    )
+
+    # Addr-spec first, then formatted form for addresses that carry a display name.
+    assert scanner_event["from"] == unordered(
+        [
+            "john.smith+sales@example.com",
+            "Smith, John (Sales) <john.smith+sales@example.com>",
+        ]
+    )
+    assert scanner_event["to"] == unordered(
+        [
+            "jane.doe@corp.example",
+            "bob@corp.example",
+            "patrick.obrien@corp.example",
+            "Doe, Jane <jane.doe@corp.example>",
+            "O'Brien, Patrick <patrick.obrien@corp.example>",
+            # bob@corp.example has no display name -- appears only once
+        ]
+    )
+    assert scanner_event["cc"] == unordered(
+        [
+            "marketing-team@corp.example",
+            "sales@example.com",
+            "li.zhang@corp.example",
+            "Sales Group <sales@example.com>",
+            "Zhang, 李明 <li.zhang@corp.example>",
+            # marketing-team@corp.example has no display name
+        ]
+    )
+    # bcc and reply_to have no display names -- lists unchanged
+    assert scanner_event["bcc"] == ["secret-list@corp.example"]
+    assert scanner_event["reply_to"] == unordered(["no-reply@example.com", "support@example.com"])
+    # No *_mailbox fields in copy mode
+    assert "from_mailbox" not in scanner_event
+    assert "to_mailbox" not in scanner_event
+
+
+def test_scan_email_display_names_parallel(
+    scan_email: Scanner,
+    data_complex_recipients_eml: File,
+) -> None:
+    """mailbox_mode=parallel emits *_mailbox sibling fields."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_complex_recipients_eml,
+        options={"mailbox_mode": "parallel"},
+    )
+
+    # Primary fields contain addr-specs only (unchanged).
+    assert scanner_event["from"] == ["john.smith+sales@example.com"]
+    assert scanner_event["to"] == unordered(
+        ["jane.doe@corp.example", "bob@corp.example", "patrick.obrien@corp.example"]
+    )
+    assert scanner_event["cc"] == unordered(
+        ["marketing-team@corp.example", "sales@example.com", "li.zhang@corp.example"]
+    )
+    assert scanner_event["bcc"] == ["secret-list@corp.example"]
+    assert scanner_event["reply_to"] == unordered(["no-reply@example.com", "support@example.com"])
+
+    # *_mailbox fields carry full formatted address strings.
+    assert scanner_event["from_mailbox"] == ["Smith, John (Sales) <john.smith+sales@example.com>"]
+    # Index-aligned with to; bob has no display name so entry equals addr-spec.
+    assert scanner_event["to_mailbox"] == unordered(
+        [
+            "Doe, Jane <jane.doe@corp.example>",
+            "bob@corp.example",
+            "O'Brien, Patrick <patrick.obrien@corp.example>",
+        ]
+    )
+    assert scanner_event["cc_mailbox"] == unordered(
+        [
+            "marketing-team@corp.example",
+            "Sales Group <sales@example.com>",
+            "Zhang, 李明 <li.zhang@corp.example>",
+        ]
+    )
+    assert scanner_event["bcc_mailbox"] == ["secret-list@corp.example"]
+    assert scanner_event["reply_to_mailbox"] == unordered(["no-reply@example.com", "support@example.com"])
+
+
+def test_scan_email_encoded_headers(
+    scan_email: Scanner,
+    data_encoded_headers_eml: File,
+) -> None:
+    """RFC 2047 encoded display names are decoded; addr-specs are extracted cleanly."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_encoded_headers_eml,
+        options={},
+    )
+
+    assert scanner_event["from"] == ["tokyo-office@example.jp"]
+    assert scanner_event["to"] == unordered(
+        [
+            "francois@corp.example",
+            "hans.mueller@corp.example",
+            "ivan.petrov@corp.example",
+        ]
+    )
+    assert scanner_event["cc"] == ["cafe-team@corp.example"]
+    assert scanner_event["bcc"] == []
+    assert scanner_event["reply_to"] == ["support@example.jp"]
+    assert scanner_event["return_path"] == "automated-system@example.com"
+    assert scanner_event["subject"] == "予業通知 - Delivery Notification"
+    assert scanner_event["thread_topic"] == "重要：予業通知"
+    assert scanner_event["message_id"] == "encoded-headers-001@example.jp"
+    assert scanner_event["x_mailer"] == ["Thunderbird 115.0"]
+
+
+def test_scan_email_group_syntax(
+    scan_email: Scanner,
+    data_group_syntax_eml: File,
+) -> None:
+    """RFC 5322 group syntax: members are expanded into to; group label appears in cc."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_group_syntax_eml,
+        options={},
+    )
+
+    assert scanner_event["from"] == ["newsletter@example.com"]
+    assert scanner_event["to"] == unordered(
+        [
+            "alice@corp.example",
+            "bob@corp.example",
+            "charlie@corp.example",
+            "dave@corp.example",
+            "eve@corp.example",
+            "frank@corp.example",
+        ]
+    )
+    assert scanner_event["cc"] == ["undisclosed-recipients"]
+    assert scanner_event["reply_to"] == unordered(["manager1@example.com", "manager2@example.com"])
+    assert scanner_event["return_path"] == "system@example.com"
+    assert scanner_event["subject"] == "Company-wide Announcement"
+    assert scanner_event["message_id"] == "group-syntax-001@example.com"
+    assert scanner_event["x_mailer"] == ["MailChimp API v3.0"]
+
+
+def test_scan_email_malformed_addresses(
+    scan_email: Scanner,
+    data_malformed_addresses_eml: File,
+) -> None:
+    """Malformed address formats: missing brackets, source routing, percent-encoding."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_malformed_addresses_eml,
+        options={},
+    )
+
+    assert scanner_event["from"] == ["sender@example.com"]
+    assert scanner_event["to"] == unordered(
+        [
+            "recipient@corp.example",
+            "no-brackets@corp.example",
+            "extra-comma@corp.example",
+            "user@final.example",
+            "user%domain@example.com",
+            "quoted@corp.example",
+        ]
+    )
+    assert scanner_event["cc"] == []
+    assert scanner_event["bcc"] == []
+    assert scanner_event["reply_to"] == ["reply@example.com"]
+    assert scanner_event["return_path"] == "sender@example.com"
+    assert scanner_event["subject"] == "Test Malformed Addresses"
+    assert scanner_event["message_id"] == "malformed-001@example.com"
+    assert scanner_event["x_mailer"] == ["Custom Mailer 1.0"]
+
+
+def test_scan_email_special_cases(
+    scan_email: Scanner,
+    data_special_cases_eml: File,
+) -> None:
+    """Bounce/DSN: null Return-Path (<>), empty Reply-To, auto-submitted signals."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_special_cases_eml,
+        options={},
+    )
+
+    assert scanner_event["from"] == ["mailer-daemon@example.com"]
+    assert scanner_event["to"] == ["postmaster@corp.example"]
+    assert scanner_event["cc"] == []
+    assert scanner_event["bcc"] == []
+    assert scanner_event["reply_to"] == []
+    assert scanner_event["return_path"] == ""
+    assert scanner_event["subject"] == "Delivery Status Notification (Failure)"
+    assert scanner_event["auto_submitted"] == "auto-replied"
+    assert scanner_event["precedence"] == "bulk"
+    assert scanner_event["message_id"] == "delivery-status-001@example.com"
+    assert scanner_event["x_mailer"] == ["Postfix 3.7.2"]
+
+
+def test_unwrap_links_no_rules() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    links = ["https://gateway.example/?url=https://dest.example/"]
+    assert scanner._unwrap_links(links, []) == links
+
+
+def test_unwrap_links_raw_url() -> None:
+    # Path-based redirect: inner URL is unencoded in the path, not a querystring value
+    scanner = ScanEmail.__new__(ScanEmail)
+    links = ["https://gateway.example/safe/https://dest.example/page"]
+    result = scanner._unwrap_links(links, [{"pattern": r"gateway\.example/safe/(?P<url>https?://\S+)"}])
+    assert result == ["https://dest.example/page"]
+
+
+def test_unwrap_links_encoded_url() -> None:
+    # Querystring-based redirect: inner URL is percent-encoded, auto-decoded on https?%3A prefix
+    scanner = ScanEmail.__new__(ScanEmail)
+    links = ["https://gateway.example/?url=https%3A%2F%2Fdest.example%2Fpath%3Fa%3D1&other=x"]
+    result = scanner._unwrap_links(links, [{"pattern": r"gateway\.example/\?url=(?P<url>https?%3A[^&]+)"}])
+    assert result == ["https://dest.example/path?a=1"]
+
+
+def test_unwrap_links_urldecode_on() -> None:
+    # urldecode=on forces decoding regardless of prefix
+    scanner = ScanEmail.__new__(ScanEmail)
+    links = ["https://gateway.example/?url=https%3A%2F%2Fdest.example%2Fpage&other=x"]
+    result = scanner._unwrap_links(
+        links,
+        [{"pattern": r"gateway\.example/\?url=(?P<url>[^&]+)"}],
+        urldecode="on",
+    )
+    assert result == ["https://dest.example/page"]
+
+
+def test_unwrap_links_urldecode_off() -> None:
+    # urldecode=off returns captured value as-is even when encoded
+    scanner = ScanEmail.__new__(ScanEmail)
+    links = ["https://gateway.example/?url=https%3A%2F%2Fdest.example%2Fpage&other=x"]
+    result = scanner._unwrap_links(
+        links,
+        [{"pattern": r"gateway\.example/\?url=(?P<url>https?%3A[^&]+)"}],
+        urldecode="off",
+    )
+    assert result == ["https%3A%2F%2Fdest.example%2Fpage"]
+
+
+def test_unwrap_links_no_match_unchanged() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    links = ["https://plain.example/no-redirect"]
+    result = scanner._unwrap_links(links, [{"pattern": r"gateway\.example/\?url=(?P<url>https?%3A[^&]+)"}])
+    assert result == links
+
+
+def test_unwrap_links_first_rule_wins() -> None:
+    scanner = ScanEmail.__new__(ScanEmail)
+    links = ["https://gateway.example/?url=https%3A%2F%2Fdest.example%2F&redirect=https%3A%2F%2Fother.example%2F"]
+    rules = [
+        {"pattern": r"gateway\.example/\?url=(?P<url>https?%3A[^&]+)"},
+        {"pattern": r"gateway\.example/.*[?&]redirect=(?P<url>https?%3A[^&]+)"},
+    ]
+    assert scanner._unwrap_links(links, rules) == ["https://dest.example/"]
+
+
+def test_scan_email_gateway_links_parallel_mode(
+    scan_email: Scanner,
+    data_gateway_links_eml: File,
+) -> None:
+    """parallel mode: links unchanged, unwrapped destinations in links_unwrapped only."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_gateway_links_eml,
+        options={
+            "link_rewrite_mode": "parallel",
+            "link_rewrite_rules": [
+                {"pattern": r"secure\.gateway\.example\.com/redirect\?url=(?P<url>https?%3A[^&]+)"},
+            ],
+        },
+    )
+    assert (
+        "https://secure.gateway.example.com/redirect?url=https%3A%2F%2Fencoded-destination.example.com%2Fpath%3Ffoo%3Dbar&other=param"
+        in scanner_event["links"]
+    )
+    assert "https://encoded-destination.example.com/path?foo=bar" not in scanner_event["links"]
+    assert scanner_event["links_unwrapped"] == ["https://encoded-destination.example.com/path?foo=bar"]
+
+
+def test_scan_email_gateway_links_none_mode(
+    scan_email: Scanner,
+    data_gateway_links_eml: File,
+) -> None:
+    """Default (none): links emitted as-is, no rewriting, no links_unwrapped."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_gateway_links_eml,
+        options={},
+    )
+    assert "links_unwrapped" not in scanner_event
+    assert (
+        "https://secure.gateway.example.com/redirect?url=https://actual-destination.example.com/path?foo=bar&other=param"
+        in scanner_event["links"]
+    )
+    assert "https://no-gateway.example.com/plain" in scanner_event["links"]
+
+
+def test_scan_email_gateway_links_copy_mode(
+    scan_email: Scanner,
+    data_gateway_links_eml: File,
+) -> None:
+    """copy mode: originals stay in links, unwrapped encoded-redirect URL added; raw redirect unchanged."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_gateway_links_eml,
+        options={
+            "link_rewrite_mode": "copy",
+            "link_rewrite_rules": [
+                {"pattern": r"secure\.gateway\.example\.com/redirect\?url=(?P<url>https?%3A[^&]+)"},
+            ],
+        },
+    )
+    assert (
+        "https://secure.gateway.example.com/redirect?url=https://actual-destination.example.com/path?foo=bar&other=param"
+        in scanner_event["links"]
+    )
+    assert (
+        "https://secure.gateway.example.com/redirect?url=https%3A%2F%2Fencoded-destination.example.com%2Fpath%3Ffoo%3Dbar&other=param"
+        in scanner_event["links"]
+    )
+    assert "https://encoded-destination.example.com/path?foo=bar" in scanner_event["links"]
+    assert "https://no-gateway.example.com/plain" in scanner_event["links"]
+    assert scanner_event["links_unwrapped"] == ["https://encoded-destination.example.com/path?foo=bar"]
+
+
+def test_scan_email_gateway_links_replace_mode(
+    scan_email: Scanner,
+    data_gateway_links_eml: File,
+) -> None:
+    """replace mode: encoded-redirect URL replaced by destination; raw redirect and plain link unchanged."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_gateway_links_eml,
+        options={
+            "link_rewrite_mode": "replace",
+            "link_rewrite_rules": [
+                {"pattern": r"secure\.gateway\.example\.com/redirect\?url=(?P<url>https?%3A[^&]+)"},
+            ],
+        },
+    )
+    assert (
+        "https://secure.gateway.example.com/redirect?url=https://actual-destination.example.com/path?foo=bar&other=param"
+        in scanner_event["links"]
+    )
+    assert "https://encoded-destination.example.com/path?foo=bar" in scanner_event["links"]
+    assert "https://no-gateway.example.com/plain" in scanner_event["links"]
+    assert "links_unwrapped" not in scanner_event
+
+
+def test_scan_email_link_stress(
+    scan_email: Scanner,
+    data_link_stress_eml: File,
+) -> None:
+    """
+    Stress test for link and domain extraction using a realistic marketing email.
+
+    Documents known eml_parser behaviors that callers should be aware of:
+
+    Links:
+      - Both text/plain and text/html body parts are scanned; duplicates across
+        parts are collapsed by the scanner's dict.fromkeys() dedup pass.
+      - Full UTM-tracked product, category, social, and transactional URLs are
+        collected; cdn image URLs (logo, product photos, icon sprites) are also
+        extracted since they appear in src= attributes.
+      - mailto: hrefs are NOT extracted as links.
+      - The same href appearing twice in the HTML (hero CTA and secondary CTA)
+        is deduplicated by eml_parser within the part.
+      - Tracking pixel URL is extracted like any other src= reference.
+
+    Domains:
+      - CSS class selectors (e.g. ``div.wrapper``, ``span.preheader``) and CSS
+        ``url()`` filenames (``hero-bg.jpg``, ``acme-sans.woff2``) are filtered
+        by eml_parser's ``domain_force_tld=True`` setting, which rejects tokens
+        whose suffix is not a known public TLD.
+    """
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_link_stress_eml,
+        options={"capture_raw_headers": False},
+    )
+
+    links = scanner_event["links"]
+    domains = scanner_event["domains"]
+
+    # --- Links: legitimate URLs present ---
+    # Primary sale CTA (appears twice in HTML, deduplicated)
+    assert (
+        "https://acme-store.example.com/sale?utm_source=email&utm_medium=email&utm_campaign=spring2024&utm_content=hero_cta"
+        in links
+    )
+    # Category nav links
+    assert "https://acme-store.example.com/mens?utm_source=email&utm_medium=email&utm_campaign=spring2024" in links
+    assert "https://acme-store.example.com/womens?utm_source=email&utm_medium=email&utm_campaign=spring2024" in links
+    assert (
+        "https://acme-store.example.com/accessories?utm_source=email&utm_medium=email&utm_campaign=spring2024" in links
+    )
+    # Product deep-links with color/size parameters
+    assert (
+        "https://acme-store.example.com/products/classic-tee?color=white&size=M&utm_source=email&utm_campaign=spring2024"
+        in links
+    )
+    assert (
+        "https://acme-store.example.com/products/slim-chino?color=navy&size=32x32&utm_source=email&utm_campaign=spring2024"
+        in links
+    )
+    # Social links present in both plain and HTML parts — deduplicated to one
+    assert links.count("https://www.facebook.com/acmestore") == 1
+    assert links.count("https://twitter.com/acmestore") == 1
+    assert links.count("https://www.instagram.com/acmestore") == 1
+    # Unsubscribe / preferences links (appear in both parts — deduplicated)
+    assert links.count("https://acme-store.example.com/unsubscribe?token=abc123xyz") == 1
+    assert links.count("https://acme-store.example.com/preferences?token=abc123xyz") == 1
+    # Tracking pixel extracted as a link
+    assert "https://tracking.acme-store.example.com/pixel.gif?uid=RCPNT12345&mid=spring2024-001&t=1704067200" in links
+    # Font URLs from @font-face src extracted
+    assert "https://cdn.acme-store.example.com/fonts/acme-sans.woff2" in links
+    assert "https://cdn.acme-store.example.com/fonts/acme-sans.woff" in links
+
+    # --- Links: mailto href NOT extracted ---
+    assert not any("mailto:" in u for u in links)
+
+    # --- Links: not capped (42 unique < default max_links=50) ---
+    assert "ScanEmail: links_truncated" not in scanner_event["flags"]
+
+    # --- Domains: CSS px dimension values filtered out ---
+    # Our re.fullmatch(r"[\d.]+px", d) guard must prevent any NNpx values
+    assert not any(re.fullmatch(r"[\d.]+px", d) for d in domains)
+
+    # --- Domains: CSS class selectors filtered by domain_force_tld=True ---
+    assert "div.wrapper" not in domains
+    assert "span.preheader" not in domains
+    assert "p.disclaimer" not in domains
+    assert "div.hero-bg" not in domains
+
+    # --- Domains: CSS url() filenames filtered by domain_force_tld=True ---
+    assert "hero-bg.jpg" not in domains
+    assert "hero-mobile.jpg" not in domains
+    assert "acme-sans.woff2" not in domains
+    assert "acme-sans.woff" not in domains
+
+    # --- Domains: legitimate domains present ---
+    assert "acme-store.example.com" in domains
+    assert "cdn.acme-store.example.com" in domains
+    assert "tracking.acme-store.example.com" in domains
+    assert "www.facebook.com" in domains
+
+
+def test_scan_email_links(
+    scan_email: Scanner,
+    data_links_eml: File,
+) -> None:
+    """Links (full URLs) are extracted from the body and de-duplicated."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_links_eml,
+        options={"capture_raw_headers": False},
+    )
+    # The body repeats one URL; it appears once in the deduped output.
+    assert scanner_event["links"] == unordered(
+        [
+            "https://one.example.com/a",
+            "https://two.example.com/b",
+            "https://three.example.com/c",
+        ]
+    )
+    assert "ScanEmail: links_truncated" not in scanner_event["flags"]
+
+
+def test_scan_email_links_capped(
+    scan_email: Scanner,
+    data_links_eml: File,
+) -> None:
+    """max_links caps the emitted link list and records a truncation flag."""
+    scanner_event = run_test_scan(
+        scanner=scan_email,
+        fixture=data_links_eml,
+        options={"capture_raw_headers": False, "max_links": 2},
+    )
+    assert len(scanner_event["links"]) == 2
+    assert "ScanEmail: links_truncated" in scanner_event["flags"]
