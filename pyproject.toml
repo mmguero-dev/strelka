@@ -16,7 +16,6 @@ beautifulsoup4 = "4.12.2"
 boltons = "23.0.0"
 boto3 = "^1.42.29"
 cart = "^1.2.3"
-certifi = "^2025.1.31"
 construct = "2.10.68"
 Cython = "*"
 cryptography = ">=50.0.1,<51.0.0"
@@ -24,12 +23,12 @@ dncil = "1.0.2"
 dnfile = "0.18.0"
 docker = "6.1.3"
 dotnetfile = "0.2.10"
-eml-parser = "3.0.2"
+eml-parser = "3.0.6"
 esprima = "4.0.1"
 formulas = "1.2.6"
 html5lib = "1.1"
 inflection = "0.5.1"
-jsbeautifier = "1.15.4"
+jsbeautifier = "2.0.3"
 libarchive-c = "5.3"
 lief = "0.17.6"
 lxml = "6.1.1"
@@ -85,7 +84,6 @@ xlrd = "2.0.1"
 xlrd2 = "1.3.4"
 xmltodict = "0.13.0"
 yara-python = "4.5.4"
-zipp = "^3.20.1"
 
 # Git dependencies
 chaskey = { git = "https://github.com/volexity/chaskey-lts", rev = "2fd80f732dd9422a9e92556758180ceee3b5b4ec" }  # For donut-decryptor
@@ -94,10 +92,12 @@ donut-decryptor = { git = "https://github.com/volexity/donut-decryptor", rev = "
 entropy = { git = "https://github.com/jshlbrd/python-entropy.git", rev = "a49f1addccb88d54115832a6d1982b957a56f329" }
 oscrypto = { git = "https://github.com/wbond/oscrypto.git", rev = "1547f535001ba568b239b8797465536759c742a3" } # for OpenSSL 3.0.10+ support (wbond/oscrypto#78)
 speakeasy-emulator = { git = "https://github.com/mandiant/speakeasy.git", rev = "1cb52a92ab4bae3659b0f8db4ed29f591d932c88" }
+zipp = ">=3.20.1,<5.0.0"
+certifi = ">=2025.1.31,<2027.0.0"
 
 [tool.poetry.group.dev.dependencies]
 black = ">=25.1,<27.0"
-isort = "^6.0.1"
+isort = ">=6.0.1,<10.0.0"
 flake8 = "^7.1.2"
 
 [build-system]
